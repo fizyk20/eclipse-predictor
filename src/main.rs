@@ -2,7 +2,7 @@ mod simulation;
 
 use std::{collections::VecDeque, str::FromStr};
 
-use chrono::{DateTime, Duration, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 use nalgebra::Vector3;
 use numeric_algs::{
     integration::{Integrator, RK4Integrator, StepSize},
@@ -237,6 +237,14 @@ fn main() {
 
         if new_eclipse != current_eclipse {
             let date = epoch + Duration::seconds(time as i64);
+            // correction TT -> UT
+            let t = date.year() as f64 + (date.month() as f64 - 0.5) / 12.0 - 2000.0;
+            let delta_t = if date.year() < 2005 {
+                63.86 + 0.3345 * t - 0.060374 * t * t + 0.0017275 * t * t * t
+            } else {
+                62.92 + 0.32217 * t + 0.005589 * t * t
+            };
+            let date = date - Duration::seconds(delta_t as i64);
             //println!("{:#?}", sim.body_by_name("Earth").unwrap());
             //println!("{:#?}", sim.body_by_name("Moon").unwrap());
             //println!("{:#?}", sim.body_by_name("Sun").unwrap());
