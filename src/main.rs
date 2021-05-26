@@ -1,6 +1,6 @@
 mod simulation;
 
-use std::str::FromStr;
+use std::{collections::VecDeque, str::FromStr};
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use nalgebra::Vector3;
@@ -22,7 +22,7 @@ enum Eclipse {
     AnnularSolar,
 }
 
-fn detect_eclipse(sim: &SimState) -> Option<Eclipse> {
+fn detect_eclipse(sim: &SimState, light_dir: Vector3<f64>) -> Option<Eclipse> {
     let sun = sim.body_by_name("Sun").unwrap();
     let earth = sim.body_by_name("Earth").unwrap();
     let moon = sim.body_by_name("Moon").unwrap();
@@ -31,7 +31,6 @@ fn detect_eclipse(sim: &SimState) -> Option<Eclipse> {
 
     let dist = earth.distance_from(sun);
     let shadow_cone_height = earth.radius * dist / (sun.radius - earth.radius);
-    let light_dir = (earth.pos - sun.pos).normalize();
     let moon_rel = moon.pos - earth.pos;
 
     let a = (earth.radius / shadow_cone_height).asin();
@@ -212,22 +211,36 @@ fn main() {
     let mut current_eclipse = None;
     let step = 10.0;
 
+    let mut light_dir_buffer = VecDeque::new();
+
     while time < 23.0 * YEAR {
         integrator.propagate_in_place(&mut sim, SimState::derivative, StepSize::Step(step));
         time += step;
 
-        /*let days = time / 3600.0 / 24.0;
-        if days % 10.0 < 0.99 * step / 3600.0 / 24.0 {
-            println!("{:.0} days passed", days);
-        }*/
+        let sun = sim.body_by_name("Sun").unwrap();
+        let earth = sim.body_by_name("Earth").unwrap();
 
-        let new_eclipse = detect_eclipse(&sim);
+        light_dir_buffer.push_back((earth.pos - sun.pos).normalize());
+        if light_dir_buffer.len() > (1000.0 / step) as usize {
+            let _ = light_dir_buffer.pop_front();
+        }
+
+        let dist = earth.distance_from(sun);
+        let delay = (dist / 299_792.458 / step) as usize;
+
+        let new_eclipse = if light_dir_buffer.len() > delay {
+            let light_dir = light_dir_buffer[light_dir_buffer.len() - 1 - delay];
+            detect_eclipse(&sim, light_dir)
+        } else {
+            None
+        };
+
         if new_eclipse != current_eclipse {
             let date = epoch + Duration::seconds(time as i64);
             //println!("{:#?}", sim.body_by_name("Earth").unwrap());
             //println!("{:#?}", sim.body_by_name("Moon").unwrap());
             //println!("{:#?}", sim.body_by_name("Sun").unwrap());
-            if let Some(eclipse) = detect_eclipse(&sim) {
+            if let Some(eclipse) = new_eclipse {
                 println!("{:?}: date = {}", eclipse, date);
             } else {
                 println!("Eclipse ends: date = {}\n", date);
