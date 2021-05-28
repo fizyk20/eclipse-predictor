@@ -10,6 +10,7 @@ use numeric_algs::symplectic::{
 };
 use simulation::{Body, SimState};
 
+const STEP: f64 = 300.0;
 const YEAR: f64 = 365.25 * 24.0 * 3600.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -51,7 +52,7 @@ impl EclipseDetector {
 
     fn save_light_dir(&mut self, time: f64, dir: Vector3<f64>) {
         self.light_dirs.push((time, dir));
-        if time - self.light_dirs[0].0 > 700.0 {
+        if time - self.light_dirs[0].0 > 600.0 + STEP {
             let _ = self.light_dirs.remove(0);
         }
     }
@@ -245,8 +246,7 @@ fn main() {
             radius: 24624.0,
         });
 
-    let step = 100.0;
-    let mut integrator = NeriIntegrator::new(step);
+    let mut integrator = NeriIntegrator::new(STEP);
     let mut time = 0.0;
     let mut current_eclipse = None;
 
@@ -259,7 +259,7 @@ fn main() {
             SimState::momentum_derivative,
             StepSize::UseDefault,
         );
-        time += step;
+        time += STEP;
 
         let sun = sim.body_by_name("Sun").unwrap();
         let earth = sim.body_by_name("Earth").unwrap();
@@ -281,7 +281,11 @@ fn main() {
                     StepSize::Step(-step2),
                 );
                 time2 -= step2;
-                if eclipse_detector.detect_eclipse(&sim2, time2) == current_eclipse {
+                if time - time2 > STEP {
+                    panic!("wtf");
+                }
+                let eclipse = eclipse_detector.detect_eclipse(&sim2, time2);
+                if eclipse == current_eclipse {
                     break;
                 }
             }
