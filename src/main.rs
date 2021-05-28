@@ -1,6 +1,6 @@
 mod simulation;
 
-use std::{collections::VecDeque, str::FromStr};
+use std::str::FromStr;
 
 use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 use nalgebra::Vector3;
@@ -22,33 +22,72 @@ enum Eclipse {
     AnnularSolar,
 }
 
-fn detect_eclipse(sim: &SimState, light_dir: Vector3<f64>) -> Option<Eclipse> {
-    let sun = sim.body_by_name("Sun").unwrap();
-    let earth = sim.body_by_name("Earth").unwrap();
-    let moon = sim.body_by_name("Moon").unwrap();
+struct EclipseDetector {
+    light_dirs: Vec<(f64, Vector3<f64>)>,
+}
 
-    // lunar eclipses
-
-    let dist = earth.distance_from(sun);
-    let shadow_cone_height = earth.radius * dist / (sun.radius - earth.radius);
-    let moon_rel = moon.pos - earth.pos;
-
-    let a = (earth.radius / shadow_cone_height).asin();
-
-    let h = moon_rel.dot(&light_dir);
-    let r_vec = moon_rel - light_dir * h;
-    let r = r_vec.dot(&r_vec).sqrt() / a.cos();
-    let h2 = shadow_cone_height - h + r * a.sin();
-
-    if h > 0.0 && (r + moon.radius) / h2 < earth.radius / shadow_cone_height {
-        return Some(Eclipse::TotalLunar);
+impl EclipseDetector {
+    fn new() -> Self {
+        Self {
+            light_dirs: Default::default(),
+        }
     }
 
-    if h > 0.0 && (r - moon.radius) / h2 < earth.radius / shadow_cone_height {
-        return Some(Eclipse::PartialLunar);
+    fn light_dir_for(&self, time: f64) -> Option<Vector3<f64>> {
+        match self
+            .light_dirs
+            .binary_search_by(|entry| entry.0.partial_cmp(&time).unwrap())
+        {
+            Err(0) => None,
+            Err(i) if i == self.light_dirs.len() => None,
+            Err(i) => {
+                let (t1, vec1) = self.light_dirs[i - 1];
+                let (t2, vec2) = self.light_dirs[i];
+                Some(vec1 + (vec2 - vec1) / (t2 - t1) * (time - t1))
+            }
+            Ok(i) => Some(self.light_dirs[i].1),
+        }
     }
 
-    None
+    fn save_light_dir(&mut self, time: f64, dir: Vector3<f64>) {
+        self.light_dirs.push((time, dir));
+        if time - self.light_dirs[0].0 > 700.0 {
+            let _ = self.light_dirs.remove(0);
+        }
+    }
+
+    fn detect_eclipse(&self, sim: &SimState, time: f64) -> Option<Eclipse> {
+        let sun = sim.body_by_name("Sun").unwrap();
+        let earth = sim.body_by_name("Earth").unwrap();
+        let moon = sim.body_by_name("Moon").unwrap();
+
+        let dist = earth.distance_from(sun);
+        let delay = dist / 299_792.458;
+
+        let light_dir = self.light_dir_for(time - delay)?.normalize();
+
+        // lunar eclipses
+
+        let shadow_cone_height = earth.radius * dist / (sun.radius - earth.radius);
+        let moon_rel = moon.pos - earth.pos;
+
+        let a = (earth.radius / shadow_cone_height).asin();
+
+        let h = moon_rel.dot(&light_dir);
+        let r_vec = moon_rel - light_dir * h;
+        let r = r_vec.dot(&r_vec).sqrt() / a.cos();
+        let h2 = shadow_cone_height - h + r * a.sin();
+
+        if h > 0.0 && (r + moon.radius) / h2 < earth.radius / shadow_cone_height {
+            return Some(Eclipse::TotalLunar);
+        }
+
+        if h > 0.0 && (r - moon.radius) / h2 < earth.radius / shadow_cone_height {
+            return Some(Eclipse::PartialLunar);
+        }
+
+        None
+    }
 }
 
 fn main() {
@@ -206,12 +245,12 @@ fn main() {
             radius: 24624.0,
         });
 
-    let step = 10.0;
+    let step = 100.0;
     let mut integrator = NeriIntegrator::new(step);
     let mut time = 0.0;
     let mut current_eclipse = None;
 
-    let mut light_dir_buffer = VecDeque::new();
+    let mut eclipse_detector = EclipseDetector::new();
 
     while time < 23.0 * YEAR {
         integrator.propagate_in_place(
@@ -225,23 +264,29 @@ fn main() {
         let sun = sim.body_by_name("Sun").unwrap();
         let earth = sim.body_by_name("Earth").unwrap();
 
-        light_dir_buffer.push_back((earth.pos - sun.pos).normalize());
-        if light_dir_buffer.len() > (1000.0 / step) as usize {
-            let _ = light_dir_buffer.pop_front();
-        }
+        eclipse_detector.save_light_dir(time, earth.pos - sun.pos);
 
-        let dist = earth.distance_from(sun);
-        let delay = (dist / 299_792.458 / step) as usize;
-
-        let new_eclipse = if light_dir_buffer.len() > delay {
-            let light_dir = light_dir_buffer[light_dir_buffer.len() - 1 - delay];
-            detect_eclipse(&sim, light_dir)
-        } else {
-            None
-        };
+        let new_eclipse = eclipse_detector.detect_eclipse(&sim, time);
 
         if new_eclipse != current_eclipse {
-            let date = epoch + Duration::seconds(time as i64);
+            // find the actual transition moment with 1 sec precision
+            let mut time2 = time;
+            let mut sim2 = sim.clone();
+            let step2 = 1.0;
+            loop {
+                integrator.propagate_in_place(
+                    &mut sim2,
+                    SimState::position_derivative,
+                    SimState::momentum_derivative,
+                    StepSize::Step(-step2),
+                );
+                time2 -= step2;
+                if eclipse_detector.detect_eclipse(&sim2, time2) == current_eclipse {
+                    break;
+                }
+            }
+
+            let date = epoch + Duration::seconds(time2 as i64);
             // correction TT -> UT
             let t = date.year() as f64 + (date.month() as f64 - 0.5) / 12.0 - 2000.0;
             let delta_t = if date.year() < 2005 {
