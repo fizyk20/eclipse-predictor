@@ -3,7 +3,7 @@ mod body;
 pub use body::Body;
 use nalgebra::{DVector, Vector3};
 use num::Zero;
-use numeric_algs::{State, StateDerivative};
+use numeric_algs::symplectic::{State, StateDerivative};
 
 use std::fmt;
 use std::ops::{Add, Div, Mul, Neg, Sub};
@@ -40,9 +40,19 @@ impl SimState {
         self.bodies.iter().find(|body| body.name == name)
     }
 
-    pub fn derivative(&self) -> SimDerivative {
-        let mut derivative = Vec::with_capacity(self.bodies.len() * DIM * 2);
-        for _ in 0..2 * DIM * self.bodies.len() {
+    pub fn position_derivative(&self) -> SimDerivative {
+        let mut derivative = Vec::with_capacity(self.bodies.len() * DIM);
+        for body in &self.bodies {
+            for i in 0..DIM {
+                derivative.push(body.vel[i]);
+            }
+        }
+        SimDerivative(DVector::from_vec(derivative))
+    }
+
+    pub fn momentum_derivative(&self) -> SimDerivative {
+        let mut derivative = Vec::with_capacity(self.bodies.len() * DIM);
+        for _ in 0..DIM * self.bodies.len() {
             derivative.push(0.0);
         }
         for (i, body) in self.bodies.iter().enumerate() {
@@ -57,8 +67,7 @@ impl SimState {
                 accel += part_accel * diff / dist;
             }
             for j in 0..DIM {
-                derivative[i * DIM * 2 + j] = body.vel[j];
-                derivative[i * DIM * 2 + DIM + j] = accel[j];
+                derivative[i * DIM + j] = accel[j];
             }
         }
         SimDerivative(DVector::from_vec(derivative))
@@ -74,13 +83,21 @@ impl SimState {
 }
 
 impl State for SimState {
-    type Derivative = SimDerivative;
+    type PositionDerivative = SimDerivative;
+    type MomentumDerivative = SimDerivative;
 
-    fn shift_in_place(&mut self, dir: &SimDerivative, amount: f64) {
+    fn shift_position_in_place(&mut self, dir: &SimDerivative, amount: f64) {
         for (i, body) in self.bodies.iter_mut().enumerate() {
             for j in 0..DIM {
-                body.pos[j] += dir.0[i * DIM * 2 + j] * amount;
-                body.vel[j] += dir.0[i * DIM * 2 + DIM + j] * amount;
+                body.pos[j] += dir.0[i * DIM + j] * amount;
+            }
+        }
+    }
+
+    fn shift_momentum_in_place(&mut self, dir: &SimDerivative, amount: f64) {
+        for (i, body) in self.bodies.iter_mut().enumerate() {
+            for j in 0..DIM {
+                body.vel[j] += dir.0[i * DIM + j] * amount;
             }
         }
     }
@@ -138,8 +155,4 @@ impl Neg for SimDerivative {
     }
 }
 
-impl StateDerivative for SimDerivative {
-    fn abs(&self) -> f64 {
-        self.0.dot(&self.0).sqrt()
-    }
-}
+impl StateDerivative for SimDerivative {}

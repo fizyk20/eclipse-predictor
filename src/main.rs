@@ -4,8 +4,8 @@ use std::{collections::VecDeque, str::FromStr};
 
 use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 use nalgebra::Vector3;
-use numeric_algs::{
-    integration::{Integrator, RK4Integrator, StepSize},
+use numeric_algs::symplectic::{
+    integration::{Integrator, NeriIntegrator, StepSize},
     State, StateDerivative,
 };
 use simulation::{Body, SimState};
@@ -206,15 +206,20 @@ fn main() {
             radius: 24624.0,
         });
 
-    let mut integrator = RK4Integrator::new(0.1);
+    let step = 10.0;
+    let mut integrator = NeriIntegrator::new(step);
     let mut time = 0.0;
     let mut current_eclipse = None;
-    let step = 10.0;
 
     let mut light_dir_buffer = VecDeque::new();
 
     while time < 23.0 * YEAR {
-        integrator.propagate_in_place(&mut sim, SimState::derivative, StepSize::Step(step));
+        integrator.propagate_in_place(
+            &mut sim,
+            SimState::position_derivative,
+            SimState::momentum_derivative,
+            StepSize::UseDefault,
+        );
         time += step;
 
         let sun = sim.body_by_name("Sun").unwrap();
