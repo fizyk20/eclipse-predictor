@@ -8,6 +8,8 @@ use numeric_algs::symplectic::{State, StateDerivative};
 use std::fmt;
 use std::ops::{Add, Div, Mul, Neg, Sub};
 
+use crate::C;
+
 type Position = Vector3<f64>;
 type Velocity = Vector3<f64>;
 
@@ -55,6 +57,9 @@ impl SimState {
         for _ in 0..DIM * self.bodies.len() {
             derivative.push(0.0);
         }
+
+        // first, we calculate purely newtonian accelerations
+        let mut newtonian_accel = vec![];
         for (i, body) in self.bodies.iter().enumerate() {
             let mut accel: Vector3<f64> = Zero::zero();
             for (i2, body2) in self.bodies.iter().enumerate() {
@@ -63,13 +68,45 @@ impl SimState {
                 }
                 let diff = body2.pos - body.pos;
                 let dist = body.distance_from(body2);
+                let n = diff / dist;
                 let part_accel = body2.gm / (dist * dist);
-                accel += part_accel * diff / dist;
+                accel += part_accel * n;
+            }
+            newtonian_accel.push(accel);
+        }
+
+        for (i, body) in self.bodies.iter().enumerate() {
+            let mut accel: Vector3<f64> = newtonian_accel[i];
+            for (i2, body2) in self.bodies.iter().enumerate() {
+                if i2 == i {
+                    continue;
+                }
+                let diff = body2.pos - body.pos;
+                let dist = body.distance_from(body2);
+                let n = diff / dist;
+
+                // relativistic corrections
+                let mut sum1 = body.vel.dot(&body.vel) + 2.0 * body2.vel.dot(&body2.vel)
+                    - 4.0 * body.vel.dot(&body2.vel)
+                    - 1.5 * n.dot(&body2.vel).powi(2)
+                    + 0.5 * diff.dot(&newtonian_accel[i2]);
+                for (i3, body3) in self.bodies.iter().enumerate() {
+                    if i3 != i {
+                        sum1 -= 4.0 * body3.gm / body3.distance_from(body);
+                        sum1 -= body3.gm / body3.distance_from(body2);
+                    }
+                }
+                accel += body2.gm / (dist * dist) / (C * C) * n;
+                accel += body2.gm / (dist * dist) / (C * C)
+                    * (-(4.0 * body.vel - 3.0 * body2.vel).dot(&n))
+                    * (body.vel - body2.vel);
+                accel += 3.5 / (C * C) * body2.gm / dist * newtonian_accel[i2];
             }
             for j in 0..DIM {
                 derivative[i * DIM + j] = accel[j];
             }
         }
+
         SimDerivative(DVector::from_vec(derivative))
     }
 

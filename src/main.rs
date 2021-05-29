@@ -12,6 +12,7 @@ use simulation::{Body, SimState};
 
 const STEP: f64 = 300.0;
 const YEAR: f64 = 365.25 * 24.0 * 3600.0;
+const C: f64 = 299_792.458;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Eclipse {
@@ -66,7 +67,7 @@ impl EclipseDetector {
         let re = earth.radius * 1.011;
 
         let dist = earth.distance_from(sun);
-        let delay = dist / 299_792.458;
+        let delay = dist / C;
 
         let light_dir = self.light_dir_for(time - delay)?.normalize();
 
