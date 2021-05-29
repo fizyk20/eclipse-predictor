@@ -62,6 +62,9 @@ impl EclipseDetector {
         let earth = sim.body_by_name("Earth").unwrap();
         let moon = sim.body_by_name("Moon").unwrap();
 
+        // correction for shadow enlargement: https://eclipse.gsfc.nasa.gov/LEcat5/shadow.html
+        let re = earth.radius * 1.011;
+
         let dist = earth.distance_from(sun);
         let delay = dist / 299_792.458;
 
@@ -69,21 +72,21 @@ impl EclipseDetector {
 
         // lunar eclipses
 
-        let shadow_cone_height = earth.radius * dist / (sun.radius - earth.radius);
+        let shadow_cone_height = re * dist / (sun.radius - re);
         let moon_rel = moon.pos - earth.pos;
 
-        let a = (earth.radius / shadow_cone_height).asin();
+        let a = (re / shadow_cone_height).asin();
 
         let h = moon_rel.dot(&light_dir);
         let r_vec = moon_rel - light_dir * h;
         let r = r_vec.dot(&r_vec).sqrt() / a.cos();
         let h2 = shadow_cone_height - h + r * a.sin();
 
-        if h > 0.0 && (r + moon.radius) / h2 < earth.radius / shadow_cone_height {
+        if h > 0.0 && (r + moon.radius) / h2 < re / shadow_cone_height {
             return Some(Eclipse::TotalLunar);
         }
 
-        if h > 0.0 && (r - moon.radius) / h2 < earth.radius / shadow_cone_height {
+        if h > 0.0 && (r - moon.radius) / h2 < re / shadow_cone_height {
             return Some(Eclipse::PartialLunar);
         }
 
