@@ -166,9 +166,9 @@ dependencies = [
 
 [[package]]
 name = "numeric-algs"
-version = "0.4.0"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6262ba0314ecc53abe9ecd17860226f012426a269720ae8c6a8725206eb3d517"
+checksum = "6c703fc31b49328e2de4fd35f1fa14152011e61d3dcd49837db90521eccc8f14"
 
 [[package]]
 name = "paste"

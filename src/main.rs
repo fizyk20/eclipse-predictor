@@ -5,7 +5,7 @@ use std::str::FromStr;
 use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
 use nalgebra::Vector3;
 use numeric_algs::symplectic::{
-    integration::{Integrator, NeriIntegrator, StepSize},
+    integration::{Integrator, StepSize, SuzukiIntegrator},
     State, StateDerivative,
 };
 use simulation::{Body, SimState};
@@ -246,7 +246,7 @@ fn main() {
             radius: 24624.0,
         });
 
-    let mut integrator = NeriIntegrator::new(STEP);
+    let mut integrator = SuzukiIntegrator::new(STEP);
     let mut time = 0.0;
     let mut current_eclipse = None;
 
