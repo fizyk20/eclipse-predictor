@@ -76,7 +76,7 @@ impl SimState {
         }
 
         for (i, body) in self.bodies.iter().enumerate() {
-            let mut accel: Vector3<f64> = newtonian_accel[i];
+            let mut accel: Vector3<f64> = Zero::zero();
             for (i2, body2) in self.bodies.iter().enumerate() {
                 if i2 == i {
                     continue;
@@ -84,6 +84,8 @@ impl SimState {
                 let diff = body2.pos - body.pos;
                 let dist = body.distance_from(body2);
                 let n = diff / dist;
+
+                let part_accel = body2.gm / (dist * dist) * n;
 
                 // relativistic corrections
                 let mut sum1 = body.vel.dot(&body.vel) + 2.0 * body2.vel.dot(&body2.vel)
@@ -93,10 +95,12 @@ impl SimState {
                 for (i3, body3) in self.bodies.iter().enumerate() {
                     if i3 != i {
                         sum1 -= 4.0 * body3.gm / body3.distance_from(body);
+                    }
+                    if i3 != i2 {
                         sum1 -= body3.gm / body3.distance_from(body2);
                     }
                 }
-                accel += body2.gm / (dist * dist) / (C * C) * n;
+                accel += part_accel * (1.0 + sum1 / (C * C));
                 accel += body2.gm / (dist * dist) / (C * C)
                     * (-(4.0 * body.vel - 3.0 * body2.vel).dot(&n))
                     * (body.vel - body2.vel);
