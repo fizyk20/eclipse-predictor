@@ -1,96 +1,71 @@
 mod simulation;
 
-use std::str::FromStr;
+use std::{f64::consts::PI, str::FromStr};
 
-use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
+use chrono::{DateTime, Duration, Utc};
 use nalgebra::Vector3;
-use numeric_algs::symplectic::{
-    integration::{Integrator, StepSize, SuzukiIntegrator},
-    State, StateDerivative,
-};
+use numeric_algs::symplectic::integration::{Integrator, StepSize, SuzukiIntegrator};
 use simulation::{Body, SimState};
 
-const STEP: f64 = 300.0;
+const STEP: f64 = 60.0;
 const YEAR: f64 = 365.25 * 24.0 * 3600.0;
+const OMEGA: f64 = 24.06570982441908 / 12.0 * PI / 86400.0;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum Eclipse {
-    PenumbralLunar,
-    PartialLunar,
-    TotalLunar,
-    PartialSolar,
-    TotalSolar,
-    AnnularSolar,
+struct Himawari {
+    axis: Vector3<f64>,
+    v1: Vector3<f64>,
+    v2: Vector3<f64>,
 }
 
-struct EclipseDetector {
-    light_dirs: Vec<(f64, Vector3<f64>)>,
-}
-
-impl EclipseDetector {
+impl Himawari {
     fn new() -> Self {
-        Self {
-            light_dirs: Default::default(),
-        }
+        let obliquity = 23.45_f64.to_radians();
+
+        let axis = Vector3::new(0.0, obliquity.sin(), obliquity.cos());
+        let v1 = Vector3::new(0.0, -obliquity.cos(), obliquity.sin());
+        let v2 = Vector3::new(1.0, 0.0, 0.0);
+
+        Self { axis, v1, v2 }
     }
 
-    fn light_dir_for(&self, time: f64) -> Option<Vector3<f64>> {
-        match self
-            .light_dirs
-            .binary_search_by(|entry| entry.0.partial_cmp(&time).unwrap())
-        {
-            Err(0) => None,
-            Err(i) if i == self.light_dirs.len() => None,
-            Err(i) => {
-                let (t1, vec1) = self.light_dirs[i - 1];
-                let (t2, vec2) = self.light_dirs[i];
-                Some(vec1 + (vec2 - vec1) / (t2 - t1) * (time - t1))
-            }
-            Ok(i) => Some(self.light_dirs[i].1),
-        }
+    fn looking_dir(&self, t: f64) -> Vector3<f64> {
+        let beta = 0.697374558 * PI / 12.0 + OMEGA * (t + 43200.0) + 140.0_f64.to_radians();
+        -self.v1 * beta.cos() - self.v2 * beta.sin()
     }
 
-    fn save_light_dir(&mut self, time: f64, dir: Vector3<f64>) {
-        self.light_dirs.push((time, dir));
-        if time - self.light_dirs[0].0 > 600.0 + STEP {
-            let _ = self.light_dirs.remove(0);
-        }
+    fn pos(&self, t: f64) -> Vector3<f64> {
+        let r = 42171.0;
+        -r * self.looking_dir(t)
     }
 
-    fn detect_eclipse(&self, sim: &SimState, time: f64) -> Option<Eclipse> {
-        let sun = sim.body_by_name("Sun").unwrap();
-        let earth = sim.body_by_name("Earth").unwrap();
+    fn within_frame(&self, sim: &SimState, t: f64) -> bool {
+        let dir = self.looking_dir(t);
+        let up = self.axis;
+        let right = dir.cross(&up);
+
         let moon = sim.body_by_name("Moon").unwrap();
+        let earth = sim.body_by_name("Earth").unwrap();
+        let pos = self.pos(t);
+        let himawari_pos = earth.pos + pos;
+        let dir_to_moon = (moon.pos - himawari_pos).normalize();
 
-        // correction for shadow enlargement: https://eclipse.gsfc.nasa.gov/LEcat5/shadow.html
-        let re = earth.radius * 1.011;
+        let x = dir_to_moon.dot(&right);
+        let y = dir_to_moon.dot(&up);
+        let z = dir_to_moon.dot(&dir);
 
-        let dist = earth.distance_from(sun);
-        let delay = dist / 299_792.458;
+        let tan_fov2 = 8.7_f64.to_radians().tan();
 
-        let light_dir = self.light_dir_for(time - delay)?.normalize();
+        (x / z).abs() < tan_fov2 && (y / z).abs() < tan_fov2 && z > 0.0
+    }
 
-        // lunar eclipses
-
-        let shadow_cone_height = re * dist / (sun.radius - re);
-        let moon_rel = moon.pos - earth.pos;
-
-        let a = (re / shadow_cone_height).asin();
-
-        let h = moon_rel.dot(&light_dir);
-        let r_vec = moon_rel - light_dir * h;
-        let r = r_vec.dot(&r_vec).sqrt() / a.cos();
-        let h2 = shadow_cone_height - h + r * a.sin();
-
-        if h > 0.0 && (r + moon.radius) / h2 < re / shadow_cone_height {
-            return Some(Eclipse::TotalLunar);
-        }
-
-        if h > 0.0 && (r - moon.radius) / h2 < re / shadow_cone_height {
-            return Some(Eclipse::PartialLunar);
-        }
-
-        None
+    fn ang_to_moon(&self, sim: &SimState, t: f64) -> f64 {
+        let moon = sim.body_by_name("Moon").unwrap();
+        let earth = sim.body_by_name("Earth").unwrap();
+        let pos = self.pos(t);
+        let dir = self.looking_dir(t);
+        let himawari_pos = earth.pos + pos;
+        let dir_to_moon = (moon.pos - himawari_pos).normalize();
+        dir_to_moon.dot(&dir).acos()
     }
 }
 
@@ -251,9 +226,9 @@ fn main() {
 
     let mut integrator = SuzukiIntegrator::new(STEP);
     let mut time = 0.0;
-    let mut current_eclipse = None;
 
-    let mut eclipse_detector = EclipseDetector::new();
+    let mut currently_visible = false;
+    let himawari = Himawari::new();
 
     while time < 23.0 * YEAR {
         integrator.propagate_in_place(
@@ -264,53 +239,32 @@ fn main() {
         );
         time += STEP;
 
-        let sun = sim.body_by_name("Sun").unwrap();
-        let earth = sim.body_by_name("Earth").unwrap();
+        let ang_to_moon = himawari.ang_to_moon(&sim, time);
+        let obscured = ang_to_moon < 8.45_f64.to_radians();
+        let within_frame = himawari.within_frame(&sim, time);
 
-        eclipse_detector.save_light_dir(time, earth.pos - sun.pos);
-
-        let new_eclipse = eclipse_detector.detect_eclipse(&sim, time);
-
-        if new_eclipse != current_eclipse {
-            // find the actual transition moment with 1 sec precision
-            let mut time2 = time;
-            let mut sim2 = sim.clone();
-            let step2 = 1.0;
-            loop {
-                integrator.propagate_in_place(
-                    &mut sim2,
-                    SimState::position_derivative,
-                    SimState::momentum_derivative,
-                    StepSize::Step(-step2),
-                );
-                time2 -= step2;
-                if time - time2 > STEP {
-                    panic!("wtf");
-                }
-                let eclipse = eclipse_detector.detect_eclipse(&sim2, time2);
-                if eclipse == current_eclipse {
-                    break;
-                }
+        let date = epoch + Duration::seconds(time as i64);
+        match (within_frame, obscured, currently_visible) {
+            (true, false, false) => {
+                println!("Becoming visible: {}", date);
+                currently_visible = true;
             }
-
-            let date = epoch + Duration::seconds(time2 as i64);
-            // correction TT -> UT
-            let t = date.year() as f64 + (date.month() as f64 - 0.5) / 12.0 - 2000.0;
-            let delta_t = if date.year() < 2005 {
-                63.86 + 0.3345 * t - 0.060374 * t * t + 0.0017275 * t * t * t
-            } else {
-                62.92 + 0.32217 * t + 0.005589 * t * t
-            };
-            let date = date - Duration::seconds(delta_t as i64);
-            //println!("{:#?}", sim.body_by_name("Earth").unwrap());
-            //println!("{:#?}", sim.body_by_name("Moon").unwrap());
-            //println!("{:#?}", sim.body_by_name("Sun").unwrap());
-            if let Some(eclipse) = new_eclipse {
-                println!("{:?}: date = {}", eclipse, date);
-            } else {
-                println!("Eclipse ends: date = {}\n", date);
+            (true, false, true) => (),
+            (true, true, false) => (),
+            (true, true, true) => {
+                println!("Becoming obscured: {}", date);
+                currently_visible = false;
+            }
+            (false, false, false) => (),
+            (false, false, true) => {
+                println!("Leaving frame: {}\n", date);
+                currently_visible = false;
+            }
+            (false, true, false) => (),
+            (false, true, true) => {
+                println!("Becoming obscured outside of the frame? {}", date);
+                currently_visible = false;
             }
         }
-        current_eclipse = new_eclipse;
     }
 }
