@@ -1,13 +1,20 @@
 #![allow(unused)]
 mod body;
 
-pub use body::Body;
+use std::{
+    fmt,
+    fs::File,
+    io::{Read, Write},
+    ops::{Add, Div, Mul, Neg, Sub},
+    path::Path,
+};
+
 use nalgebra::{DVector, Vector3};
 use num::Zero;
 use numeric_algs::symplectic::{State, StateDerivative};
+use toml::{map::Map, Value};
 
-use std::fmt;
-use std::ops::{Add, Div, Mul, Neg, Sub};
+pub use body::Body;
 
 type Position = Vector3<f64>;
 type Velocity = Vector3<f64>;
@@ -81,6 +88,21 @@ impl SimState {
     pub fn get_body(&self, idx: usize) -> &Body {
         &self.bodies[idx]
     }
+
+    pub fn save<P: AsRef<Path>>(self, path: P) {
+        let mut file = File::create(path).expect("should create file");
+        let value = Value::from(self);
+        file.write_all(value.to_string().as_bytes());
+    }
+
+    pub fn load<P: AsRef<Path>>(path: P) -> Self {
+        let mut file = File::open(path).expect("should open file");
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer);
+        toml::from_slice::<Value>(&buffer)
+            .expect("should parse TOML")
+            .into()
+    }
 }
 
 impl State for SimState {
@@ -110,6 +132,31 @@ impl fmt::Debug for SimState {
             writeln!(formatter, "{}. {:?}", i + 1, body)?;
         }
         Ok(())
+    }
+}
+
+impl From<SimState> for Value {
+    fn from(sim: SimState) -> Value {
+        let mut map = Map::new();
+        map.insert(
+            "bodies".to_string(),
+            Value::Array(sim.bodies.into_iter().map(Value::from).collect()),
+        );
+        Value::Table(map)
+    }
+}
+
+impl From<Value> for SimState {
+    fn from(val: Value) -> SimState {
+        match val {
+            Value::Table(mut map) => match map.remove("bodies") {
+                Some(Value::Array(bodies)) => SimState {
+                    bodies: bodies.into_iter().map(Body::from).collect(),
+                },
+                _ => panic!("should have an array"),
+            },
+            _ => panic!("should be a table"),
+        }
     }
 }
 
