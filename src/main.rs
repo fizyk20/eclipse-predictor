@@ -4,6 +4,7 @@ mod snapshots;
 use std::{f64::consts::PI, str::FromStr};
 
 use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
+use clap::{App, Arg};
 use lazy_static::lazy_static;
 use nalgebra::Vector3;
 use numeric_algs::symplectic::integration::SuzukiIntegrator;
@@ -107,18 +108,18 @@ fn close_to_month(datetime: DateTime<Utc>) -> bool {
     ((datetime - nearest_month).num_nanoseconds().unwrap() as f64 / 1e9).abs() < STEP
 }
 
-fn main() {
+fn generate(start_date: DateTime<Utc>, end_date: DateTime<Utc>) {
     let mut snapshots = Snapshots::new();
 
     let mut integrator = SuzukiIntegrator::new(STEP);
 
-    let mut sim = snapshots.get_closest(*EPOCH);
-    sim.propagate_to(&mut integrator, *EPOCH);
+    let mut sim = snapshots.get_closest(start_date);
+    sim.propagate_to(&mut integrator, start_date);
 
     let mut currently_visible = false;
     let himawari = Himawari::new();
 
-    while sim.time_since(*EPOCH) < *YEAR * 2 {
+    while sim.time() < end_date {
         sim.step_forwards(&mut integrator);
 
         if close_to_month(sim.time()) {
@@ -157,4 +158,37 @@ fn main() {
             }
         }
     }
+}
+
+fn main() {
+    let matches = App::new("Himawari Moon Predictor")
+        .about("App predicting when the Moon should be visible in Himawari photos")
+        .arg(
+            Arg::with_name("start_date")
+                .long("start-date")
+                .short("s")
+                .value_name("DATETIME")
+                .help("Starting date in the format YYYY-MM-DDTHH:MM:SSZ (default 2022-01-01T00:00:00Z)")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("end_date")
+                .long("end-date")
+                .short("e")
+                .value_name("DATETIME")
+                .help("End date in the format YYYY-MM-DDTHH:MM:SSZ (default 2024-01-01T00:00:00Z)")
+                .takes_value(true),
+        )
+        .get_matches();
+
+    let start_date = matches
+        .value_of("start_date")
+        .unwrap_or("2022-01-01T00:00:00Z");
+    let end_date = matches
+        .value_of("end_date")
+        .unwrap_or("2024-01-01T00:00:00Z");
+    generate(
+        DateTime::<Utc>::from_str(start_date).unwrap(),
+        DateTime::<Utc>::from_str(end_date).unwrap(),
+    );
 }
