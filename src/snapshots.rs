@@ -45,4 +45,21 @@ impl Snapshots {
             }
         }
     }
+
+    pub fn insert(&mut self, sim: SimState) {
+        match self
+            .snapshots
+            .binary_search_by_key(&sim.time(), |x| x.time())
+        {
+            Ok(_) => (), // exists already - nothing to do
+            Err(i) => {
+                let name = format!(
+                    "snapshots/{}.state",
+                    sim.time().format("%Y-%m-%dT%H:%M:%SZ")
+                );
+                sim.clone().save(&name);
+                self.snapshots.insert(i, sim);
+            }
+        }
+    }
 }

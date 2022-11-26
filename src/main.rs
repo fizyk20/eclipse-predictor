@@ -3,7 +3,7 @@ mod snapshots;
 
 use std::{f64::consts::PI, str::FromStr};
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
 use lazy_static::lazy_static;
 use nalgebra::Vector3;
 use numeric_algs::symplectic::integration::SuzukiIntegrator;
@@ -80,8 +80,35 @@ impl Himawari {
     }
 }
 
+fn nearest_month_start(datetime: DateTime<Utc>) -> DateTime<Utc> {
+    let month = datetime.month();
+    let prev_month = DateTime::<Utc>::from_utc(
+        NaiveDate::from_ymd(datetime.year(), month, 1).and_hms(0, 0, 0),
+        Utc,
+    );
+    let next_month = DateTime::<Utc>::from_utc(
+        if month == 12 {
+            NaiveDate::from_ymd(datetime.year() + 1, 1, 1)
+        } else {
+            NaiveDate::from_ymd(datetime.year(), month + 1, 1)
+        }
+        .and_hms(0, 0, 0),
+        Utc,
+    );
+    if datetime - prev_month < next_month - datetime {
+        prev_month
+    } else {
+        next_month
+    }
+}
+
+fn close_to_month(datetime: DateTime<Utc>) -> bool {
+    let nearest_month = nearest_month_start(datetime);
+    ((datetime - nearest_month).num_nanoseconds().unwrap() as f64 / 1e9).abs() < STEP
+}
+
 fn main() {
-    let snapshots = Snapshots::new();
+    let mut snapshots = Snapshots::new();
 
     let mut integrator = SuzukiIntegrator::new(STEP);
 
@@ -93,6 +120,13 @@ fn main() {
 
     while sim.time_since(*EPOCH) < *YEAR * 2 {
         sim.step_forwards(&mut integrator);
+
+        if close_to_month(sim.time()) {
+            let mut sim_clone = sim.clone();
+            let nearest_month = nearest_month_start(sim.time());
+            sim_clone.propagate_to(&mut integrator, nearest_month);
+            snapshots.insert(sim_clone);
+        }
 
         let ang_to_moon = himawari.ang_to_moon(&sim);
         let obscured = ang_to_moon < 8.45_f64.to_radians();
