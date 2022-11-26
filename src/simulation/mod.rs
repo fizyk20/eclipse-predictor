@@ -9,10 +9,16 @@ use std::{
     path::Path,
 };
 
+use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use nalgebra::{DVector, Vector3};
 use num::Zero;
-use numeric_algs::symplectic::{State, StateDerivative};
+use numeric_algs::symplectic::{
+    integration::{Integrator, StepSize},
+    State, StateDerivative,
+};
 use toml::{map::Map, Value};
+
+use super::STEP;
 
 pub use body::Body;
 
@@ -23,12 +29,43 @@ const DIM: usize = 3;
 
 #[derive(Clone)]
 pub struct SimState {
+    time: DateTime<Utc>,
     bodies: Vec<Body>,
+}
+
+impl Default for SimState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SimState {
     pub fn new() -> Self {
-        Self { bodies: Vec::new() }
+        Self {
+            time: DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(0, 0), Utc),
+            bodies: Vec::new(),
+        }
+    }
+
+    pub fn time(&self) -> DateTime<Utc> {
+        self.time
+    }
+
+    pub fn with_timestamp(mut self, timestamp: f64) -> Self {
+        let timestamp_i64 = (timestamp * 1e9) as i64;
+        let timestamp_s = timestamp_i64 / 1_000_000_000;
+        let timestamp_ns = (timestamp_i64 % 1_000_000_000) as u32;
+        self.time = DateTime::<Utc>::from_utc(
+            NaiveDateTime::from_timestamp(timestamp_s, timestamp_ns),
+            Utc,
+        );
+        self
+    }
+
+    pub fn with_datestr(mut self, datestr: &str) -> Self {
+        let naive_datetime = NaiveDateTime::parse_from_str(datestr, "%Y-%m-%dT%H:%M:%SZ").unwrap();
+        self.time = DateTime::<Utc>::from_utc(naive_datetime, Utc);
+        self
     }
 
     pub fn with_body(mut self, body: Body) -> Self {
@@ -59,10 +96,7 @@ impl SimState {
     }
 
     pub fn momentum_derivative(&self) -> SimDerivative {
-        let mut derivative = Vec::with_capacity(self.bodies.len() * DIM);
-        for _ in 0..DIM * self.bodies.len() {
-            derivative.push(0.0);
-        }
+        let mut derivative = vec![0.0; DIM * self.bodies.len()];
         for (i, body) in self.bodies.iter().enumerate() {
             let mut accel: Vector3<f64> = Zero::zero();
             for (i2, body2) in self.bodies.iter().enumerate() {
@@ -103,6 +137,46 @@ impl SimState {
             .expect("should parse TOML")
             .into()
     }
+
+    pub fn propagate_to<I: Integrator<Self>>(
+        &mut self,
+        integrator: &mut I,
+        datetime: DateTime<Utc>,
+    ) {
+        while datetime > self.time {
+            let step_size =
+                STEP.min((datetime - self.time).num_nanoseconds().unwrap() as f64 / 1e9);
+            integrator.propagate_in_place(
+                self,
+                SimState::position_derivative,
+                SimState::momentum_derivative,
+                StepSize::Step(step_size),
+            );
+        }
+        while datetime < self.time {
+            let step_size =
+                STEP.min((self.time - datetime).num_nanoseconds().unwrap() as f64 / 1e9);
+            integrator.propagate_in_place(
+                self,
+                SimState::position_derivative,
+                SimState::momentum_derivative,
+                StepSize::Step(-step_size),
+            );
+        }
+    }
+
+    pub fn step_forwards<I: Integrator<Self>>(&mut self, integrator: &mut I) {
+        integrator.propagate_in_place(
+            self,
+            SimState::position_derivative,
+            SimState::momentum_derivative,
+            StepSize::UseDefault,
+        );
+    }
+
+    pub fn time_since(&self, epoch: DateTime<Utc>) -> Duration {
+        self.time - epoch
+    }
 }
 
 impl State for SimState {
@@ -114,6 +188,15 @@ impl State for SimState {
             for j in 0..DIM {
                 body.pos[j] += dir.0[i * DIM + j] * amount;
             }
+        }
+        self.time = self.time + Duration::nanoseconds((amount * 1e9) as i64);
+
+        // rounding hack
+        let time_ns = self.time.timestamp_subsec_nanos() as i64;
+        if time_ns > 999_999_000 {
+            self.time = self.time + Duration::nanoseconds(1_000_000_000 - time_ns);
+        } else if time_ns < 1_000 {
+            self.time = self.time - Duration::nanoseconds(time_ns);
         }
     }
 
@@ -151,6 +234,7 @@ impl From<Value> for SimState {
         match val {
             Value::Table(mut map) => match map.remove("bodies") {
                 Some(Value::Array(bodies)) => SimState {
+                    time: DateTime::<Utc>::from_utc(NaiveDateTime::from_timestamp(0, 0), Utc),
                     bodies: bodies.into_iter().map(Body::from).collect(),
                 },
                 _ => panic!("should have an array"),

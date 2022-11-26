@@ -4,15 +4,19 @@ mod snapshots;
 use std::{f64::consts::PI, str::FromStr};
 
 use chrono::{DateTime, Duration, Utc};
+use lazy_static::lazy_static;
 use nalgebra::Vector3;
-use numeric_algs::symplectic::integration::{Integrator, StepSize, SuzukiIntegrator};
+use numeric_algs::symplectic::integration::SuzukiIntegrator;
 use simulation::SimState;
 use snapshots::Snapshots;
 
 const STEP: f64 = 60.0;
-const YEAR: f64 = 365.25 * 24.0 * 3600.0;
 const OMEGA: f64 = 24.06570982441908 / 12.0 * PI / 86400.0;
 const ANGLE_2022_01_01: f64 = 3.3271216795200544;
+lazy_static! {
+    static ref YEAR: Duration = Duration::seconds(365 * 24 * 3600 + 6 * 3600);
+    static ref EPOCH: DateTime<Utc> = DateTime::<Utc>::from_str("2022-01-01T00:00:00Z").unwrap();
+}
 
 struct Himawari {
     axis: Vector3<f64>,
@@ -41,7 +45,9 @@ impl Himawari {
         -r * self.looking_dir(t)
     }
 
-    fn within_frame(&self, sim: &SimState, t: f64) -> bool {
+    fn within_frame(&self, sim: &SimState) -> bool {
+        let t = (sim.time() - *EPOCH).num_nanoseconds().unwrap() as f64 / 1e9;
+
         let dir = self.looking_dir(t);
         let up = self.axis;
         let right = dir.cross(&up);
@@ -61,7 +67,9 @@ impl Himawari {
         (x / z).abs() < tan_fov2 && (y / z).abs() < tan_fov2 && z > 0.0
     }
 
-    fn ang_to_moon(&self, sim: &SimState, t: f64) -> f64 {
+    fn ang_to_moon(&self, sim: &SimState) -> f64 {
+        let t = (sim.time() - *EPOCH).num_nanoseconds().unwrap() as f64 / 1e9;
+
         let moon = sim.body_by_name("Moon").unwrap();
         let earth = sim.body_by_name("Earth").unwrap();
         let pos = self.pos(t);
@@ -72,80 +80,25 @@ impl Himawari {
     }
 }
 
-struct SimWithTimestamp {
-    timestamp: f64,
-    state: SimState,
-    integrator: SuzukiIntegrator,
-}
-
-impl SimWithTimestamp {
-    fn new(timestamp: i64, state: SimState) -> Self {
-        Self {
-            timestamp: timestamp as f64,
-            state,
-            integrator: SuzukiIntegrator::new(STEP),
-        }
-    }
-
-    fn propagate_to(&mut self, timestamp: f64) {
-        while timestamp > self.timestamp {
-            let step_size = STEP.min(timestamp - self.timestamp);
-            self.integrator.propagate_in_place(
-                &mut self.state,
-                SimState::position_derivative,
-                SimState::momentum_derivative,
-                StepSize::Step(step_size),
-            );
-            self.timestamp += step_size;
-        }
-        while timestamp < self.timestamp {
-            let step_size = STEP.min(self.timestamp - timestamp);
-            self.integrator.propagate_in_place(
-                &mut self.state,
-                SimState::position_derivative,
-                SimState::momentum_derivative,
-                StepSize::Step(-step_size),
-            );
-            self.timestamp -= step_size;
-        }
-    }
-
-    fn step_forwards(&mut self) {
-        self.integrator.propagate_in_place(
-            &mut self.state,
-            SimState::position_derivative,
-            SimState::momentum_derivative,
-            StepSize::UseDefault,
-        );
-        self.timestamp += STEP;
-    }
-
-    fn time_since(&self, epoch: DateTime<Utc>) -> f64 {
-        self.timestamp - (epoch.timestamp() as f64)
-    }
-}
-
 fn main() {
-    let epoch = DateTime::<Utc>::from_str("2022-01-01T00:00:00Z").unwrap();
-
     let snapshots = Snapshots::new();
 
-    let (timestamp, sim) = snapshots.get_closest(epoch.timestamp());
-    let mut sim = SimWithTimestamp::new(timestamp, sim);
-    sim.propagate_to(epoch.timestamp() as f64);
+    let mut integrator = SuzukiIntegrator::new(STEP);
+
+    let mut sim = snapshots.get_closest(*EPOCH);
+    sim.propagate_to(&mut integrator, *EPOCH);
 
     let mut currently_visible = false;
     let himawari = Himawari::new();
 
-    while sim.time_since(epoch) < 2.0 * YEAR {
-        sim.step_forwards();
-        let time = sim.time_since(epoch);
+    while sim.time_since(*EPOCH) < *YEAR * 2 {
+        sim.step_forwards(&mut integrator);
 
-        let ang_to_moon = himawari.ang_to_moon(&sim.state, time);
+        let ang_to_moon = himawari.ang_to_moon(&sim);
         let obscured = ang_to_moon < 8.45_f64.to_radians();
-        let within_frame = himawari.within_frame(&sim.state, time);
+        let within_frame = himawari.within_frame(&sim);
 
-        let date = epoch + Duration::seconds(time as i64);
+        let date = sim.time();
 
         match (within_frame, obscured, currently_visible) {
             (true, false, false) => {
