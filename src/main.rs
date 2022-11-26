@@ -7,7 +7,7 @@ use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
 use clap::{App, Arg};
 use lazy_static::lazy_static;
 use nalgebra::Vector3;
-use numeric_algs::symplectic::integration::SuzukiIntegrator;
+use numeric_algs::symplectic::integration::{Integrator, StepSize, SuzukiIntegrator};
 use simulation::SimState;
 use snapshots::Snapshots;
 
@@ -108,13 +108,56 @@ fn close_to_month(datetime: DateTime<Utc>) -> bool {
     ((datetime - nearest_month).num_nanoseconds().unwrap() as f64 / 1e9).abs() < STEP
 }
 
+fn propagate_to<I: Integrator<SimState>>(
+    integrator: &mut I,
+    sim: &mut SimState,
+    snapshots: &mut Snapshots,
+    datetime: DateTime<Utc>,
+) {
+    while datetime > sim.time() {
+        let step_size = STEP.min((datetime - sim.time()).num_nanoseconds().unwrap() as f64 / 1e9);
+        integrator.propagate_in_place(
+            sim,
+            SimState::position_derivative,
+            SimState::momentum_derivative,
+            StepSize::Step(step_size),
+        );
+        maybe_save_snapshot(integrator, sim, snapshots);
+    }
+    while datetime < sim.time() {
+        let step_size = STEP.min((sim.time() - datetime).num_nanoseconds().unwrap() as f64 / 1e9);
+        integrator.propagate_in_place(
+            sim,
+            SimState::position_derivative,
+            SimState::momentum_derivative,
+            StepSize::Step(-step_size),
+        );
+        maybe_save_snapshot(integrator, sim, snapshots);
+    }
+}
+
+fn maybe_save_snapshot<I: Integrator<SimState>>(
+    integrator: &mut I,
+    sim: &SimState,
+    snapshots: &mut Snapshots,
+) {
+    if close_to_month(sim.time()) {
+        let mut sim_clone = sim.clone();
+        let nearest_month = nearest_month_start(sim.time());
+        if nearest_month != sim_clone.time() {
+            propagate_to(integrator, &mut sim_clone, snapshots, nearest_month);
+        }
+        snapshots.insert(sim_clone);
+    }
+}
+
 fn generate(start_date: DateTime<Utc>, end_date: DateTime<Utc>) {
     let mut snapshots = Snapshots::new();
 
     let mut integrator = SuzukiIntegrator::new(STEP);
 
     let mut sim = snapshots.get_closest(start_date);
-    sim.propagate_to(&mut integrator, start_date);
+    propagate_to(&mut integrator, &mut sim, &mut snapshots, start_date);
 
     let mut currently_visible = false;
     let himawari = Himawari::new();
@@ -122,12 +165,7 @@ fn generate(start_date: DateTime<Utc>, end_date: DateTime<Utc>) {
     while sim.time() < end_date {
         sim.step_forwards(&mut integrator);
 
-        if close_to_month(sim.time()) {
-            let mut sim_clone = sim.clone();
-            let nearest_month = nearest_month_start(sim.time());
-            sim_clone.propagate_to(&mut integrator, nearest_month);
-            snapshots.insert(sim_clone);
-        }
+        maybe_save_snapshot(&mut integrator, &sim, &mut snapshots);
 
         let ang_to_moon = himawari.ang_to_moon(&sim);
         let obscured = ang_to_moon < 8.45_f64.to_radians();

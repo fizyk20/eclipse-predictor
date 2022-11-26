@@ -138,33 +138,6 @@ impl SimState {
             .into()
     }
 
-    pub fn propagate_to<I: Integrator<Self>>(
-        &mut self,
-        integrator: &mut I,
-        datetime: DateTime<Utc>,
-    ) {
-        while datetime > self.time {
-            let step_size =
-                STEP.min((datetime - self.time).num_nanoseconds().unwrap() as f64 / 1e9);
-            integrator.propagate_in_place(
-                self,
-                SimState::position_derivative,
-                SimState::momentum_derivative,
-                StepSize::Step(step_size),
-            );
-        }
-        while datetime < self.time {
-            let step_size =
-                STEP.min((self.time - datetime).num_nanoseconds().unwrap() as f64 / 1e9);
-            integrator.propagate_in_place(
-                self,
-                SimState::position_derivative,
-                SimState::momentum_derivative,
-                StepSize::Step(-step_size),
-            );
-        }
-    }
-
     pub fn step_forwards<I: Integrator<Self>>(&mut self, integrator: &mut I) {
         integrator.propagate_in_place(
             self,
